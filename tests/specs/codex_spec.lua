@@ -18,6 +18,8 @@ describe('codex.nvim', function()
   before_each(function()
     vim.cmd 'set noswapfile' -- prevent side effects
     vim.cmd 'silent! bwipeout!' -- close any open codex windows
+    pcall(vim.keymap.del, 'n', '<C-a>')
+    pcall(vim.keymap.del, 'x', '<C-a>')
 
     local state = require 'codex.state'
     state.buf = nil
@@ -52,6 +54,17 @@ describe('codex.nvim', function()
     eq(ft, 'codex')
 
     require('codex').close()
+  end)
+
+  it('open keeps current window when focus is false', function()
+    local codex = reload_codex()
+    codex.setup { cmd = { 'echo', 'test' } }
+
+    local origin_win = vim.api.nvim_get_current_win()
+    codex.open { focus = false }
+
+    eq(vim.api.nvim_get_current_win(), origin_win)
+    codex.close()
   end)
 
   it('toggles the window', function()
@@ -157,6 +170,43 @@ describe('codex.nvim', function()
     eq(received_cmd[1], 'echo')
     eq(received_cmd[2], 'from-cmd')
 
+    vim.fn = original_fn
+  end)
+
+  it('uses current buffer directory by default for cwd', function()
+    local original_fn = vim.fn
+    local received_cwd = nil
+
+    vim.fn = setmetatable({
+      termopen = function(_, opts)
+        received_cwd = opts.cwd
+        if type(opts.on_exit) == 'function' then
+          vim.defer_fn(function()
+            opts.on_exit(0)
+          end, 10)
+        end
+        return 221
+      end,
+    }, { __index = original_fn })
+
+    local temp_dir = vim.fn.tempname()
+    vim.fn.mkdir(temp_dir, 'p')
+    local file_path = temp_dir .. '/cwd_default_test.lua'
+    vim.fn.writefile({ 'print("hello")' }, file_path)
+    vim.cmd('edit ' .. vim.fn.fnameescape(file_path))
+
+    local codex = reload_codex()
+    codex.setup {
+      cmd = { 'echo', 'test' },
+    }
+
+    codex.open()
+
+    vim.wait(500, function()
+      return received_cwd ~= nil
+    end, 10)
+
+    eq(normalize_path(received_cwd), normalize_path(temp_dir))
     vim.fn = original_fn
   end)
 
@@ -266,6 +316,60 @@ describe('codex.nvim', function()
     vim.fn = original_fn
   end)
 
+  it('registers smart keymaps by default and triggers Codex actions', function()
+    local codex = reload_codex()
+    codex.setup { cmd = { 'echo', 'test' } }
+
+    local normal_map = vim.fn.maparg('<C-a>', 'n', false, true)
+    local visual_map = vim.fn.maparg('<C-a>', 'x', false, true)
+
+    assert(type(normal_map.callback) == 'function', 'normal smart keymap callback should exist')
+    assert(type(visual_map.callback) == 'function', 'visual smart keymap callback should exist')
+
+    local toggle_called = false
+    local original_toggle = codex.toggle
+    codex.toggle = function()
+      toggle_called = true
+    end
+
+    normal_map.callback()
+
+    assert(toggle_called, 'normal smart keymap should call codex.toggle')
+
+    local send_called = false
+    local captured_submit = nil
+    local original_send_selection = codex.actions.send_selection
+    codex.actions.send_selection = function(opts)
+      send_called = true
+      captured_submit = opts and opts.submit
+      return true
+    end
+
+    visual_map.callback()
+
+    assert(send_called, 'visual smart keymap should call send_selection')
+    eq(captured_submit, false)
+
+    codex.toggle = original_toggle
+    codex.actions.send_selection = original_send_selection
+  end)
+
+  it('does not register smart keymaps when disabled', function()
+    local codex = reload_codex()
+    codex.setup {
+      cmd = { 'echo', 'test' },
+      keymaps = {
+        smart = false,
+      },
+    }
+
+    local normal_map = vim.fn.maparg('<C-a>', 'n', false, true)
+    local visual_map = vim.fn.maparg('<C-a>', 'x', false, true)
+
+    assert(vim.tbl_isempty(normal_map), 'normal smart keymap should be absent when disabled')
+    assert(vim.tbl_isempty(visual_map), 'visual smart keymap should be absent when disabled')
+  end)
+
   it('sends payload via actions.send and respects submit option', function()
     local codex = reload_codex()
     codex.setup { cmd = { 'echo', 'test' } }
@@ -325,6 +429,9 @@ describe('codex.nvim', function()
       isdirectory = original_fn.isdirectory,
     }, { __index = original_fn })
 
+    local state = require 'codex.state'
+    state.job = 999
+
     local captured_payload = nil
     local captured_submit = nil
     local original_send = codex.actions.send
@@ -342,6 +449,159 @@ describe('codex.nvim', function()
     eq(captured_submit, false)
 
     codex.actions.send = original_send
+    vim.fn = original_fn
+  end)
+
+
+  it('send_selection keeps current window and exits visual mode', function()
+    local codex = reload_codex()
+    codex.setup { cmd = { 'echo', 'test' } }
+
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_set_current_buf(buf)
+    vim.api.nvim_buf_set_name(buf, vim.loop.cwd() .. '/selection_focus_mode_test.lua')
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+      'alpha',
+      'beta',
+      'gamma',
+    })
+
+    local origin_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_cursor(origin_win, { 1, 0 })
+    vim.cmd('normal! Vj')
+    assert(vim.api.nvim_get_mode().mode:match('^[vV\22]'), 'should start in visual mode for test')
+
+    local original_fn = vim.fn
+    local sent_payload = nil
+    vim.fn = setmetatable({
+      chansend = function(_, payload)
+        sent_payload = payload
+        return 1
+      end,
+    }, { __index = original_fn })
+
+    local state = require 'codex.state'
+    state.job = 888
+
+    local ok = codex.actions.send_selection()
+
+    assert(ok, 'send_selection should succeed')
+    eq(vim.api.nvim_get_current_win(), origin_win)
+    assert(vim.api.nvim_get_mode().mode:match('^n'), 'send_selection should return to normal mode')
+    assert(sent_payload:find('File: selection_focus_mode_test.lua:1%-2', 1, false), 'payload should include file and line range')
+
+    vim.fn = original_fn
+  end)
+
+
+  it('send_selection reopens hidden Codex window before sending', function()
+    local codex = reload_codex()
+    codex.setup { cmd = { 'echo', 'test' } }
+
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_set_current_buf(buf)
+    vim.api.nvim_buf_set_name(buf, vim.loop.cwd() .. '/selection_reopen_hidden_test.lua')
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+      'alpha',
+      'beta',
+      'gamma',
+    })
+
+    local state = require 'codex.state'
+    state.job = 999
+
+    codex.open { focus = false }
+    assert(state.win and vim.api.nvim_win_is_valid(state.win), 'Codex window should be open before hiding')
+
+    codex.close()
+    assert(state.win == nil, 'Codex window should be hidden after close')
+
+    local origin_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_cursor(origin_win, { 1, 0 })
+    vim.cmd('normal! Vj')
+    assert(vim.api.nvim_get_mode().mode:match('^[vV\22]'), 'should start in visual mode for test')
+
+    local original_fn = vim.fn
+    local sent_payload = nil
+
+    vim.fn = setmetatable({
+      chansend = function(_, payload)
+        sent_payload = payload
+        return 1
+      end,
+      fnamemodify = original_fn.fnamemodify,
+      isdirectory = original_fn.isdirectory,
+    }, { __index = original_fn })
+
+    local ok = codex.actions.send_selection()
+
+    assert(ok, 'send_selection should succeed when hidden session exists')
+    assert(state.win and vim.api.nvim_win_is_valid(state.win), 'send_selection should reopen hidden Codex window')
+    eq(vim.api.nvim_get_current_win(), origin_win)
+    assert(vim.api.nvim_get_mode().mode:match('^n'), 'send_selection should return to normal mode')
+    assert(sent_payload:find('File: selection_reopen_hidden_test.lua:1%-2', 1, false), 'payload should include file and line range')
+
+    vim.fn = original_fn
+  end)
+
+  it('send_selection opens Codex session when none is active', function()
+    local codex = reload_codex()
+    codex.setup { cmd = { 'echo', 'test' } }
+
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_set_current_buf(buf)
+    vim.api.nvim_buf_set_name(buf, vim.loop.cwd() .. '/selection_autostart_test.lua')
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+      'alpha',
+      'beta',
+      'gamma',
+    })
+
+    local original_fn = vim.fn
+    local termopen_called = false
+    local termopen_win = nil
+    local sent_payload = nil
+
+    vim.fn = setmetatable({
+      mode = function()
+        return 'v'
+      end,
+      visualmode = function()
+        return 'v'
+      end,
+      getpos = function(mark)
+        if mark == 'v' then
+          return { 0, 1, 1, 0 }
+        end
+        return { 0, 2, 4, 0 }
+      end,
+      termopen = function(_, _)
+        termopen_called = true
+        termopen_win = vim.api.nvim_get_current_win()
+        return 777
+      end,
+      chansend = function(_, payload)
+        sent_payload = payload
+        return 1
+      end,
+      fnamemodify = original_fn.fnamemodify,
+      isdirectory = original_fn.isdirectory,
+    }, { __index = original_fn })
+
+    local state = require 'codex.state'
+    state.job = nil
+    state.win = nil
+
+    local origin_win = vim.api.nvim_get_current_win()
+
+    local ok = codex.actions.send_selection()
+
+    assert(ok, 'send_selection should auto-open Codex session')
+    eq(vim.api.nvim_get_current_win(), origin_win)
+    assert(termopen_called, 'send_selection should start Codex when no session is active')
+    eq(termopen_win, state.win)
+    assert(sent_payload:find('File: selection_autostart_test.lua:1%-2', 1, false), 'payload should include file and line range')
+
     vim.fn = original_fn
   end)
 

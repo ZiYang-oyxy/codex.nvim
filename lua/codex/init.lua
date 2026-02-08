@@ -7,6 +7,7 @@ M.actions = {}
 
 local config = {
   keymaps = {
+    smart = '<C-a>', -- Default: Ctrl+a for smart Codex actions
     toggle = nil,
     quit = '<C-q>', -- Default: Ctrl+q to quit
   },
@@ -18,8 +19,41 @@ local config = {
   autoinstall = true,
   panel     = false,   -- if true, open Codex in a side-panel instead of floating window
   use_buffer = false,  -- if true, capture Codex stdout into a normal buffer instead of a terminal
-  cwd_from_buffer = false, -- if true, run Codex from current file's directory
+  cwd_from_buffer = true, -- if true, run Codex from current file's directory
 }
+
+local smart_keymap_lhs = nil
+
+local function clear_smart_keymaps(lhs)
+  if type(lhs) ~= 'string' or lhs == '' then
+    return
+  end
+
+  pcall(vim.keymap.del, 'n', lhs)
+  pcall(vim.keymap.del, 'x', lhs)
+end
+
+local function setup_smart_keymaps()
+  if smart_keymap_lhs then
+    clear_smart_keymaps(smart_keymap_lhs)
+    smart_keymap_lhs = nil
+  end
+
+  local smart_lhs = config.keymaps and config.keymaps.smart
+  if type(smart_lhs) ~= 'string' or smart_lhs == '' then
+    return
+  end
+
+  vim.keymap.set('n', smart_lhs, function()
+    M.toggle()
+  end, { silent = true, desc = 'Codex: Toggle' })
+
+  vim.keymap.set('x', smart_lhs, function()
+    M.actions.send_selection { submit = false }
+  end, { silent = true, desc = 'Codex: Send selection' })
+
+  smart_keymap_lhs = smart_lhs
+end
 
 local function cmd_contains_model_flag(cmd_args)
   for _, arg in ipairs(cmd_args or {}) do
@@ -95,6 +129,13 @@ local function normalize_column(buffer_number, line_number, column_number, is_en
   return zero_based_column
 end
 
+local function exit_visual_mode_if_needed()
+  if vim.api.nvim_get_mode().mode:match '^[vV\22]' then
+    local esc = vim.api.nvim_replace_termcodes('<Esc>', true, false, true)
+    vim.api.nvim_feedkeys(esc, 'nx', false)
+  end
+end
+
 local function get_visual_selection()
   local buffer_number = vim.api.nvim_get_current_buf()
   local current_mode = vim.fn.mode()
@@ -120,13 +161,13 @@ local function get_visual_selection()
   local end_pos = vim.fn.getpos '.'
   if start_pos[2] == 0 or end_pos[2] == 0 then
     if needs_restore or current_mode:match '^[vV\22]' then
-      pcall(vim.cmd, 'normal! \\27')
+      exit_visual_mode_if_needed()
     end
     return nil
   end
 
   if needs_restore or current_mode:match '^[vV\22]' then
-    pcall(vim.cmd, 'normal! \\27')
+    exit_visual_mode_if_needed()
   end
 
   local start_line = start_pos[2]
@@ -212,6 +253,8 @@ end
 
 function M.actions.send_selection(opts)
   local options = opts or {}
+  local origin_win = vim.api.nvim_get_current_win()
+
   local selection = get_visual_selection()
   if not selection or not selection.text or selection.text == '' then
     vim.notify('codex.nvim: visual selection is empty', vim.log.levels.WARN)
@@ -230,7 +273,35 @@ function M.actions.send_selection(opts)
     payload = payload .. '\n\n'
   end
 
-  return M.actions.send(payload, { submit = options.submit == true })
+  local has_visible_window = state.win and vim.api.nvim_win_is_valid(state.win)
+
+  if not state.job then
+    if has_visible_window then
+      M.close()
+    end
+
+    M.open { focus = false }
+  elseif not has_visible_window then
+    M.open { focus = false }
+  end
+
+  if not state.job then
+    vim.notify('codex.nvim: no active Codex session (open Codex first)', vim.log.levels.WARN)
+    if vim.api.nvim_win_is_valid(origin_win) then
+      pcall(vim.api.nvim_set_current_win, origin_win)
+    end
+    exit_visual_mode_if_needed()
+    return false
+  end
+
+  local ok = M.actions.send(payload, { submit = options.submit == true })
+
+  if vim.api.nvim_win_is_valid(origin_win) then
+    pcall(vim.api.nvim_set_current_win, origin_win)
+  end
+  exit_visual_mode_if_needed()
+
+  return ok
 end
 
 function M.setup(user_config)
@@ -251,9 +322,11 @@ function M.setup(user_config)
   if config.keymaps.toggle then
     vim.api.nvim_set_keymap('n', config.keymaps.toggle, '<cmd>CodexToggle<CR>', { noremap = true, silent = true })
   end
+
+  setup_smart_keymaps()
 end
 
-local function open_window()
+local function open_window(enter)
   local width = math.floor(vim.o.columns * config.width)
   local height = math.floor(vim.o.lines * config.height)
   local row = math.floor((vim.o.lines - height) / 2)
@@ -295,7 +368,7 @@ local function open_window()
 
   local border = type(config.border) == 'string' and styles[config.border] or config.border
 
-  state.win = vim.api.nvim_open_win(state.buf, true, {
+  state.win = vim.api.nvim_open_win(state.buf, enter ~= false, {
     relative = 'editor',
     width = width,
     height = height,
@@ -307,8 +380,9 @@ local function open_window()
 end
 
 --- Open Codex in a side-panel (vertical split) instead of floating window
-local function open_panel()
+local function open_panel(enter)
   -- Create a vertical split on the right and show the buffer
+  local origin_win = vim.api.nvim_get_current_win()
   vim.cmd('vertical rightbelow vsplit')
   local win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(win, state.buf)
@@ -316,9 +390,16 @@ local function open_panel()
   local width = math.floor(vim.o.columns * config.width)
   vim.api.nvim_win_set_width(win, width)
   state.win = win
+
+  if enter == false and vim.api.nvim_win_is_valid(origin_win) then
+    vim.api.nvim_set_current_win(origin_win)
+  end
 end
 
-function M.open()
+function M.open(opts)
+  local options = opts or {}
+  local focus_window = options.focus ~= false
+
   local function create_clean_buf()
     local buf = vim.api.nvim_create_buf(false, false)
 
@@ -338,7 +419,9 @@ function M.open()
   end
 
   if state.win and vim.api.nvim_win_is_valid(state.win) then
-    vim.api.nvim_set_current_win(state.win)
+    if focus_window then
+      vim.api.nvim_set_current_win(state.win)
+    end
     return
   end
 
@@ -349,7 +432,7 @@ function M.open()
     if config.autoinstall then
       installer.prompt_autoinstall(function(success)
         if success then
-          M.open() -- Try again after installing
+          M.open(options) -- Try again after installing
         else
           -- Show failure message *after* buffer is created
           if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
@@ -361,7 +444,7 @@ function M.open()
             'You can install manually with:',
             '  npm install -g @openai/codex',
           })
-          if config.panel then open_panel() else open_window() end
+          if config.panel then open_panel(focus_window) else open_window(focus_window) end
         end
       end)
       return
@@ -378,7 +461,7 @@ function M.open()
         '',
         'Or enable autoinstall in setup: require("codex").setup{ autoinstall = true }',
       })
-      if config.panel then open_panel() else open_window() end
+      if config.panel then open_panel(focus_window) else open_window(focus_window) end
       return
     end
   end
@@ -396,7 +479,7 @@ function M.open()
     job_cwd = resolve_job_cwd()
   end
 
-  if config.panel then open_panel() else open_window() end
+  if config.panel then open_panel(focus_window) else open_window(focus_window) end
 
   if not state.job then
     if config.use_buffer then
@@ -429,12 +512,31 @@ function M.open()
       })
     else
       -- use a terminal buffer
-      state.job = vim.fn.termopen(cmd_args, {
+      local term_options = {
         cwd = job_cwd,
         on_exit = function()
           state.job = nil
         end,
-      })
+      }
+
+      local function open_terminal()
+        return vim.fn.termopen(cmd_args, term_options)
+      end
+
+      if state.win and vim.api.nvim_win_is_valid(state.win) then
+        local opened_job = nil
+        local ok = pcall(vim.api.nvim_win_call, state.win, function()
+          opened_job = open_terminal()
+        end)
+
+        if ok then
+          state.job = opened_job
+        else
+          state.job = open_terminal()
+        end
+      else
+        state.job = open_terminal()
+      end
     end
   end
 end

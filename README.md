@@ -6,6 +6,7 @@
 
 ### Features:
 - ✅ Toggle Codex window or side-panel with `:CodexToggle`
+- ✅ Smart default keymap on `<C-a>` (normal: toggle, visual: send selection)
 - ✅ Optional keymap mapping via `setup` call
 - ✅ Background running when window hidden
 - ✅ Statusline integration via `require('codex').status()`
@@ -42,9 +43,10 @@ return {
   },
   opts = {
     keymaps     = {
-      toggle = nil, -- Keybind to toggle Codex window (Disabled by default, watch out for conflicts)
+      smart = '<C-a>', -- Smart Codex keymap (normal: toggle, visual: send selection); set `false` to disable
+      toggle = nil, -- Optional keybind to toggle Codex window
       quit = '<C-q>', -- Keybind to close the Codex window (default: Ctrl + q)
-    },         -- Disable internal default keymap (<leader>cc -> :CodexToggle)
+    },
     border      = 'rounded',  -- Options: 'single', 'double', or 'rounded'
     width       = 0.8,        -- Width of the floating window (0.0 to 1.0)
     height      = 0.8,        -- Height of the floating window (0.0 to 1.0)
@@ -53,16 +55,18 @@ return {
     autoinstall = true,       -- Automatically install the Codex CLI if not found
     panel       = false,      -- Open Codex in a side-panel (vertical split) instead of floating window
     use_buffer  = false,      -- Capture Codex stdout into a normal buffer instead of a terminal buffer
-    cwd_from_buffer = false,  -- If true, run Codex with cwd set to current file's directory
+    cwd_from_buffer = true,   -- Default true: run Codex with cwd set to current file's directory
   },
 }```
 
 ### Usage:
 - Call `:Codex` (or `:CodexToggle`) to open or close the Codex popup or side-panel.
-- Map your own keybindings via the `keymaps.toggle` setting.
+- By default, `<C-a>` is mapped in normal mode to toggle Codex and in visual mode to send the current selection.
+- Disable the smart mapping with `keymaps.smart = false`, or set it to another key.
+- Add an additional toggle mapping via `keymaps.toggle` if desired.
 - To choose floating popup vs side-panel, set `panel = false` (popup) or `panel = true` (panel) in your setup options.
 - To capture Codex output in an editable buffer instead of a terminal, set `use_buffer = true` (or `false` to keep terminal) in your setup options.
-- To run Codex from the current file's directory, set `cwd_from_buffer = true`.
+- Codex runs from the current file's directory by default (`cwd_from_buffer = true`). Set it to `false` to keep process cwd.
 - Use `:CodexSendSelection` in visual mode to send the current selection to Codex without auto-submitting.
 - Add the following code to show backgrounded Codex window in lualine:
 
@@ -86,7 +90,8 @@ codex.actions.send_selection({ submit = false })
 
 ### Migration Notes:
 - `cmd` is the only command option (string or list), e.g. `{ "codex", "-m", "gpt-5.3-codex" }`.
-- The new `cwd_from_buffer` option lets you choose whether Codex uses the current file directory (`true`) or keeps process cwd (`false`, default).
+- `cwd_from_buffer` defaults to `true`, so Codex uses the current file directory unless you set it to `false`.
+- `keymaps.smart` defaults to `<C-a>` and can be disabled by setting it to `false`.
 
 ### Configuration:
 - All plugin configurations can be seen in the `opts` table of the plugin setup, as shown in the installation section.

@@ -31,7 +31,7 @@ export OPENAI_API_KEY=your_api_key
 return {
   'kkrampis/codex.nvim',
   lazy = true,
-  cmd = { 'Codex', 'CodexToggle' }, -- Optional: Load only on command execution
+  cmd = { 'Codex', 'CodexToggle', 'CodexSendSelection' }, -- Optional: Load only on command execution
   keys = {
     {
       '<leader>cc', -- Change this to your preferred keybinding
@@ -48,10 +48,12 @@ return {
     border      = 'rounded',  -- Options: 'single', 'double', or 'rounded'
     width       = 0.8,        -- Width of the floating window (0.0 to 1.0)
     height      = 0.8,        -- Height of the floating window (0.0 to 1.0)
+    cmd         = 'codex',    -- Command used to start Codex (string or list)
     model       = nil,        -- Optional: pass a string to use a specific model (e.g., 'o3-mini')
     autoinstall = true,       -- Automatically install the Codex CLI if not found
     panel       = false,      -- Open Codex in a side-panel (vertical split) instead of floating window
     use_buffer  = false,      -- Capture Codex stdout into a normal buffer instead of a terminal buffer
+    cwd_from_buffer = false,  -- If true, run Codex with cwd set to current file's directory
   },
 }```
 
@@ -60,11 +62,31 @@ return {
 - Map your own keybindings via the `keymaps.toggle` setting.
 - To choose floating popup vs side-panel, set `panel = false` (popup) or `panel = true` (panel) in your setup options.
 - To capture Codex output in an editable buffer instead of a terminal, set `use_buffer = true` (or `false` to keep terminal) in your setup options.
+- To run Codex from the current file's directory, set `cwd_from_buffer = true`.
+- Use `:CodexSendSelection` in visual mode to send the current selection to Codex without auto-submitting.
 - Add the following code to show backgrounded Codex window in lualine:
 
 ```lua
 require('codex').status() -- drop in to your lualine sections
 ```
+
+### Selection Actions:
+
+```lua
+local codex = require('codex')
+
+-- Send arbitrary text to the running Codex terminal session.
+codex.actions.send('Explain this function', { submit = false })
+
+-- Send visual selection as:
+-- File: <name>:<start>-<end>
+-- <selection>
+codex.actions.send_selection({ submit = false })
+```
+
+### Migration Notes:
+- `cmd` is the only command option (string or list), e.g. `{ "codex", "-m", "gpt-5.3-codex" }`.
+- The new `cwd_from_buffer` option lets you choose whether Codex uses the current file directory (`true`) or keeps process cwd (`false`, default).
 
 ### Configuration:
 - All plugin configurations can be seen in the `opts` table of the plugin setup, as shown in the installation section.

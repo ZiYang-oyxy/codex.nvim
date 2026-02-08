@@ -4,10 +4,25 @@
 local a = require 'plenary.async.tests'
 local eq = assert.equals
 
+local function reload_codex()
+  package.loaded['codex'] = nil
+  package.loaded['codex.state'] = nil
+  return require 'codex'
+end
+
+local function normalize_path(path)
+  return vim.loop.fs_realpath(path) or path
+end
+
 describe('codex.nvim', function()
   before_each(function()
     vim.cmd 'set noswapfile' -- prevent side effects
     vim.cmd 'silent! bwipeout!' -- close any open codex windows
+
+    local state = require 'codex.state'
+    state.buf = nil
+    state.win = nil
+    state.job = nil
   end)
 
   it('loads the module', function()
@@ -24,6 +39,7 @@ describe('codex.nvim', function()
     local cmds = vim.api.nvim_get_commands {}
     assert(cmds['Codex'], 'Codex command not found')
     assert(cmds['CodexToggle'], 'CodexToggle command not found')
+    assert(cmds['CodexSendSelection'], 'CodexSendSelection command not found')
   end)
 
   it('opens a floating terminal window', function()
@@ -87,9 +103,7 @@ describe('codex.nvim', function()
     }, { __index = original_fn })
 
     -- Reload module fresh
-    package.loaded['codex'] = nil
-    package.loaded['codex.state'] = nil
-    local codex = require 'codex'
+    local codex = reload_codex()
 
     codex.setup {
       cmd = 'codex',
@@ -108,6 +122,258 @@ describe('codex.nvim', function()
     assert(vim.tbl_contains(received_cmd, 'o3-mini'), 'should include specified model name')
 
     -- Restore original
+    vim.fn = original_fn
+  end)
+
+  it('uses cmd list as command arguments', function()
+    local original_fn = vim.fn
+    local received_cmd = nil
+
+    vim.fn = setmetatable({
+      termopen = function(cmd, opts)
+        received_cmd = cmd
+        if type(opts.on_exit) == 'function' then
+          vim.defer_fn(function()
+            opts.on_exit(0)
+          end, 10)
+        end
+        return 321
+      end,
+    }, { __index = original_fn })
+
+    local codex = reload_codex()
+    codex.setup {
+      cmd = { 'echo', 'from-cmd' },
+      autoinstall = false,
+    }
+
+    codex.open()
+
+    vim.wait(500, function()
+      return received_cmd ~= nil
+    end, 10)
+
+    assert(type(received_cmd) == 'table', 'cmd should be passed as list')
+    eq(received_cmd[1], 'echo')
+    eq(received_cmd[2], 'from-cmd')
+
+    vim.fn = original_fn
+  end)
+
+  it('keeps process cwd when cwd_from_buffer is false', function()
+    local original_fn = vim.fn
+    local received_cwd = nil
+
+    vim.fn = setmetatable({
+      termopen = function(_, opts)
+        received_cwd = opts.cwd
+        if type(opts.on_exit) == 'function' then
+          vim.defer_fn(function()
+            opts.on_exit(0)
+          end, 10)
+        end
+        return 222
+      end,
+    }, { __index = original_fn })
+
+    vim.cmd 'enew'
+
+    local codex = reload_codex()
+    codex.setup {
+      cmd = { 'echo', 'test' },
+      cwd_from_buffer = false,
+    }
+
+    codex.open()
+
+    vim.wait(500, function()
+      return received_cwd ~= nil
+    end, 10)
+
+    eq(received_cwd, vim.loop.cwd())
+    vim.fn = original_fn
+  end)
+
+  it('uses current buffer directory when cwd_from_buffer is true', function()
+    local original_fn = vim.fn
+    local received_cwd = nil
+
+    vim.fn = setmetatable({
+      termopen = function(_, opts)
+        received_cwd = opts.cwd
+        if type(opts.on_exit) == 'function' then
+          vim.defer_fn(function()
+            opts.on_exit(0)
+          end, 10)
+        end
+        return 223
+      end,
+    }, { __index = original_fn })
+
+    local temp_dir = vim.fn.tempname()
+    vim.fn.mkdir(temp_dir, 'p')
+    local file_path = temp_dir .. '/cwd_test.lua'
+    vim.fn.writefile({ 'print("hello")' }, file_path)
+    vim.cmd('edit ' .. vim.fn.fnameescape(file_path))
+
+    local codex = reload_codex()
+    codex.setup {
+      cmd = { 'echo', 'test' },
+      cwd_from_buffer = true,
+    }
+
+    codex.open()
+
+    vim.wait(500, function()
+      return received_cwd ~= nil
+    end, 10)
+
+    eq(normalize_path(received_cwd), normalize_path(temp_dir))
+    vim.fn = original_fn
+  end)
+
+  it('falls back to process cwd when buffer has no file path', function()
+    local original_fn = vim.fn
+    local received_cwd = nil
+
+    vim.fn = setmetatable({
+      termopen = function(_, opts)
+        received_cwd = opts.cwd
+        if type(opts.on_exit) == 'function' then
+          vim.defer_fn(function()
+            opts.on_exit(0)
+          end, 10)
+        end
+        return 224
+      end,
+    }, { __index = original_fn })
+
+    vim.cmd 'enew'
+
+    local codex = reload_codex()
+    codex.setup {
+      cmd = { 'echo', 'test' },
+      cwd_from_buffer = true,
+    }
+
+    codex.open()
+
+    vim.wait(500, function()
+      return received_cwd ~= nil
+    end, 10)
+
+    eq(received_cwd, vim.loop.cwd())
+    vim.fn = original_fn
+  end)
+
+  it('sends payload via actions.send and respects submit option', function()
+    local codex = reload_codex()
+    codex.setup { cmd = { 'echo', 'test' } }
+
+    local original_fn = vim.fn
+    local sent = {}
+
+    vim.fn = setmetatable({
+      chansend = function(_, payload)
+        sent[#sent + 1] = payload
+        return 1
+      end,
+    }, { __index = original_fn })
+
+    local state = require 'codex.state'
+    state.job = 999
+
+    local ok_plain = codex.actions.send('hello')
+    local ok_submit = codex.actions.send('world', { submit = true })
+
+    assert(ok_plain, 'send should succeed without submit')
+    assert(ok_submit, 'send should succeed with submit')
+    eq(sent[1], 'hello')
+    eq(sent[2], 'world\n')
+
+    vim.fn = original_fn
+  end)
+
+  it('send_selection builds payload and calls actions.send', function()
+    local codex = reload_codex()
+    codex.setup { cmd = { 'echo', 'test' } }
+
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_set_current_buf(buf)
+    vim.api.nvim_buf_set_name(buf, vim.loop.cwd() .. '/selection_test.lua')
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+      'alpha',
+      'beta',
+      'gamma',
+    })
+
+    local original_fn = vim.fn
+    vim.fn = setmetatable({
+      mode = function()
+        return 'v'
+      end,
+      visualmode = function()
+        return 'v'
+      end,
+      getpos = function(mark)
+        if mark == 'v' then
+          return { 0, 1, 1, 0 }
+        end
+        return { 0, 2, 4, 0 }
+      end,
+      fnamemodify = original_fn.fnamemodify,
+      isdirectory = original_fn.isdirectory,
+    }, { __index = original_fn })
+
+    local captured_payload = nil
+    local captured_submit = nil
+    local original_send = codex.actions.send
+    codex.actions.send = function(payload, opts)
+      captured_payload = payload
+      captured_submit = opts and opts.submit
+      return true
+    end
+
+    local ok = codex.actions.send_selection()
+
+    assert(ok, 'send_selection should succeed')
+    assert(captured_payload:find('File: selection_test.lua:1%-2', 1, false), 'payload should include file and line range')
+    assert(captured_payload:find('alpha\nbet', 1, true), 'payload should include selected text')
+    eq(captured_submit, false)
+
+    codex.actions.send = original_send
+    vim.fn = original_fn
+  end)
+
+  it('send_selection returns false when selection is empty', function()
+    local codex = reload_codex()
+    codex.setup { cmd = { 'echo', 'test' } }
+
+    local original_fn = vim.fn
+    vim.fn = setmetatable({
+      mode = function()
+        return 'v'
+      end,
+      visualmode = function()
+        return 'v'
+      end,
+      getpos = function()
+        return { 0, 0, 0, 0 }
+      end,
+    }, { __index = original_fn })
+
+    local called = false
+    local original_send = codex.actions.send
+    codex.actions.send = function()
+      called = true
+      return true
+    end
+
+    local ok = codex.actions.send_selection()
+    assert(not ok, 'send_selection should fail on empty selection')
+    assert(not called, 'actions.send should not be called for empty selection')
+
+    codex.actions.send = original_send
     vim.fn = original_fn
   end)
 end)

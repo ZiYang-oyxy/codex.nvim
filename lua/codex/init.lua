@@ -221,6 +221,63 @@ local function get_visual_selection()
   }
 end
 
+local function reset_session_send_state()
+  state.ready = false
+  state.pending = {}
+  state.ready_probe_scheduled = false
+  state.ready_fallback_scheduled = false
+end
+
+local function flush_pending_messages()
+  if not state.job or not state.ready then
+    return
+  end
+
+  local queue = state.pending or {}
+  if #queue == 0 then
+    return
+  end
+
+  state.pending = {}
+
+  for i, payload in ipairs(queue) do
+    local ok = pcall(vim.fn.chansend, state.job, payload)
+    if not ok then
+      for j = i, #queue do
+        table.insert(state.pending, queue[j])
+      end
+      vim.notify('codex.nvim: failed to flush queued message to Codex session', vim.log.levels.ERROR)
+      return
+    end
+  end
+end
+
+local function mark_session_ready()
+  if not state.job or state.ready then
+    return
+  end
+
+  state.ready = true
+  flush_pending_messages()
+end
+
+local function schedule_ready_probe(delay, kind)
+  local flag_name = kind == 'fallback' and 'ready_fallback_scheduled' or 'ready_probe_scheduled'
+  if state[flag_name] then
+    return
+  end
+
+  state[flag_name] = true
+  vim.defer_fn(function()
+    state[flag_name] = false
+    mark_session_ready()
+  end, delay)
+end
+
+local function schedule_session_ready_fallback()
+  schedule_ready_probe(1200, 'fallback')
+end
+
 function M.actions.send(text, opts)
   local options = opts or {}
   local submit = options.submit == true
@@ -241,6 +298,14 @@ function M.actions.send(text, opts)
   end
 
   local payload = submit and (text .. '\n') or text
+
+  if not state.ready then
+    state.pending = state.pending or {}
+    table.insert(state.pending, payload)
+    schedule_session_ready_fallback()
+    return true
+  end
+
   local ok = pcall(vim.fn.chansend, state.job, payload)
 
   if not ok then
@@ -482,6 +547,8 @@ function M.open(opts)
   if config.panel then open_panel(focus_window) else open_window(focus_window) end
 
   if not state.job then
+    reset_session_send_state()
+
     if config.use_buffer then
       -- capture stdout/stderr into normal buffer
       state.job = vim.fn.jobstart(cmd_args, {
@@ -505,6 +572,7 @@ function M.open(opts)
         end,
         on_exit = function(_, code)
           state.job = nil
+          reset_session_send_state()
           vim.api.nvim_buf_set_lines(state.buf, -1, -1, false, {
             ('[Codex exit: %d]'):format(code),
           })
@@ -514,8 +582,18 @@ function M.open(opts)
       -- use a terminal buffer
       local term_options = {
         cwd = job_cwd,
+        on_stdout = function(_, data)
+          if not state.job or state.ready then
+            return
+          end
+
+          if data and #data > 0 then
+            schedule_ready_probe(120, 'probe')
+          end
+        end,
         on_exit = function()
           state.job = nil
+          reset_session_send_state()
         end,
       }
 
@@ -536,6 +614,10 @@ function M.open(opts)
         end
       else
         state.job = open_terminal()
+      end
+
+      if state.job then
+        schedule_session_ready_fallback()
       end
     end
   end

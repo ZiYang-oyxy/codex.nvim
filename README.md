@@ -6,7 +6,7 @@
 
 ### Features:
 - ✅ Toggle Codex window or side-panel with `:CodexToggle`
-- ✅ Smart default keymap on `<C-a>` (normal: toggle, visual: send selection)
+- ✅ Smart default keymap on `<C-a>` (normal: toggle + focus terminal, visual: send selection + focus terminal, terminal: close)
 - ✅ Optional keymap mapping via `setup` call
 - ✅ Background running when window hidden
 - ✅ Statusline integration via `require('codex').status()`
@@ -43,17 +43,17 @@ return {
   },
   opts = {
     keymaps     = {
-      smart = '<C-a>', -- Smart Codex keymap (normal: toggle, visual: send selection); set `false` to disable
+      smart = '<C-a>', -- Smart keymap (normal: toggle+focus, visual: send+focus, terminal: close); set `false` to disable
       toggle = nil, -- Optional keybind to toggle Codex window
       quit = '<C-q>', -- Keybind to close the Codex window (default: Ctrl + q)
     },
     border      = 'rounded',  -- Options: 'single', 'double', or 'rounded'
-    width       = 0.8,        -- Width of the floating window (0.0 to 1.0)
+    width       = 0.5,        -- Width ratio used by side-panel or floating window (0.0 to 1.0)
     height      = 0.8,        -- Height of the floating window (0.0 to 1.0)
     cmd         = 'codex',    -- Command used to start Codex (string or list)
     model       = nil,        -- Optional: pass a string to use a specific model (e.g., 'o3-mini')
     autoinstall = true,       -- Automatically install the Codex CLI if not found
-    panel       = false,      -- Open Codex in a side-panel (vertical split) instead of floating window
+    panel       = true,       -- Default open mode is side-panel (set false for floating popup)
     use_buffer  = false,      -- Capture Codex stdout into a normal buffer instead of a terminal buffer
     cwd_from_buffer = true,   -- Default true: run Codex with cwd set to current file's directory
   },
@@ -61,10 +61,13 @@ return {
 
 ### Usage:
 - Call `:Codex` (or `:CodexToggle`) to open or close the Codex popup or side-panel.
-- By default, `<C-a>` is mapped in normal mode to toggle Codex and in visual mode to send the current selection.
+- By default, `<C-a>` is mapped to:
+  - normal mode: toggle Codex and enter terminal insert mode when opening
+  - visual mode: send selection and focus Codex terminal
+  - terminal mode (inside Codex buffer): close Codex window
 - Disable the smart mapping with `keymaps.smart = false`, or set it to another key.
 - Add an additional toggle mapping via `keymaps.toggle` if desired.
-- To choose floating popup vs side-panel, set `panel = false` (popup) or `panel = true` (panel) in your setup options.
+- Side-panel is the default open mode. Set `panel = false` to use a floating popup instead.
 - To capture Codex output in an editable buffer instead of a terminal, set `use_buffer = true` (or `false` to keep terminal) in your setup options.
 - Codex runs from the current file's directory by default (`cwd_from_buffer = true`). Set it to `false` to keep process cwd.
 - Use `:CodexSendSelection` in visual mode to send the current selection to Codex without auto-submitting.
@@ -91,7 +94,9 @@ codex.actions.send_selection({ submit = false })
 ### Migration Notes:
 - `cmd` is the only command option (string or list), e.g. `{ "codex", "-m", "gpt-5.3-codex" }`.
 - `cwd_from_buffer` defaults to `true`, so Codex uses the current file directory unless you set it to `false`.
-- `keymaps.smart` defaults to `<C-a>` and can be disabled by setting it to `false`.
+- `keymaps.smart` defaults to `<C-a>` and includes normal/visual/terminal actions.
+- Default UI now opens in side-panel mode (`panel = true`) with `width = 0.5` and `border = 'rounded'`.
+- To restore legacy defaults, set `panel = false`, `width = 0.8`, and `border = 'single'`.
 
 ### Configuration:
 - All plugin configurations can be seen in the `opts` table of the plugin setup, as shown in the installation section.

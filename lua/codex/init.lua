@@ -11,13 +11,13 @@ local config = {
     toggle = nil,
     quit = '<C-q>', -- Default: Ctrl+q to quit
   },
-  border = 'single',
-  width = 0.8,
+  border = 'rounded',
+  width = 0.5,
   height = 0.8,
   cmd = 'codex',
   model = nil, -- Default to the latest model
   autoinstall = true,
-  panel     = false,   -- if true, open Codex in a side-panel instead of floating window
+  panel     = true,    -- if true, open Codex in a side-panel instead of floating window
   use_buffer = false,  -- if true, capture Codex stdout into a normal buffer instead of a terminal
   cwd_from_buffer = true, -- if true, run Codex from current file's directory
 }
@@ -33,6 +33,33 @@ local function clear_smart_keymaps(lhs)
   pcall(vim.keymap.del, 'x', lhs)
 end
 
+local function codex_is_visible()
+  return state.win and vim.api.nvim_win_is_valid(state.win) or false
+end
+
+local function codex_open_and_enter_terminal()
+  M.open { focus = true }
+  vim.cmd 'startinsert'
+end
+
+local function codex_toggle_from_normal()
+  if codex_is_visible() then
+    M.close()
+    return
+  end
+
+  codex_open_and_enter_terminal()
+end
+
+local function codex_send_selection_and_focus()
+  local ok = M.actions.send_selection { submit = false }
+  if not ok then
+    return
+  end
+
+  codex_open_and_enter_terminal()
+end
+
 local function setup_smart_keymaps()
   if smart_keymap_lhs then
     clear_smart_keymaps(smart_keymap_lhs)
@@ -44,13 +71,9 @@ local function setup_smart_keymaps()
     return
   end
 
-  vim.keymap.set('n', smart_lhs, function()
-    M.toggle()
-  end, { silent = true, desc = 'Codex: Toggle' })
+  vim.keymap.set('n', smart_lhs, codex_toggle_from_normal, { silent = true, desc = 'Codex: Toggle and focus terminal' })
 
-  vim.keymap.set('x', smart_lhs, function()
-    M.actions.send_selection { submit = false }
-  end, { silent = true, desc = 'Codex: Send selection' })
+  vim.keymap.set('x', smart_lhs, codex_send_selection_and_focus, { silent = true, desc = 'Codex: Send selection and focus terminal' })
 
   smart_keymap_lhs = smart_lhs
 end
@@ -472,8 +495,14 @@ function M.open(opts)
     vim.api.nvim_buf_set_option(buf, 'swapfile', false)
     vim.api.nvim_buf_set_option(buf, 'filetype', 'codex')
 
-    -- Apply configured quit keybinding
+    -- Allow smart key to close the Codex terminal directly from terminal mode.
+    local smart_lhs = config.keymaps and config.keymaps.smart
+    if type(smart_lhs) == 'string' and smart_lhs ~= '' then
+      local close_cmd = [[<cmd>lua require('codex').close()<CR>]]
+      vim.api.nvim_buf_set_keymap(buf, 't', smart_lhs, [[<C-\><C-n>]] .. close_cmd, { noremap = true, silent = true })
+    end
 
+    -- Apply configured quit keybinding
     if config.keymaps.quit then
       local quit_cmd = [[<cmd>lua require('codex').close()<CR>]]
       vim.api.nvim_buf_set_keymap(buf, 't', config.keymaps.quit, [[<C-\><C-n>]] .. quit_cmd, { noremap = true, silent = true })

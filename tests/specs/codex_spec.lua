@@ -25,6 +25,10 @@ describe('codex.nvim', function()
     state.buf = nil
     state.win = nil
     state.job = nil
+    state.ready = false
+    state.pending = {}
+    state.ready_probe_scheduled = false
+    state.ready_fallback_scheduled = false
   end)
 
   it('loads the module', function()
@@ -44,7 +48,7 @@ describe('codex.nvim', function()
     assert(cmds['CodexSendSelection'], 'CodexSendSelection command not found')
   end)
 
-  it('opens a floating terminal window', function()
+  it('opens a side panel by default', function()
     require('codex').setup { cmd = { 'echo', 'test' } }
     require('codex').open()
 
@@ -52,6 +56,8 @@ describe('codex.nvim', function()
     local buf = vim.api.nvim_win_get_buf(win)
     local ft = vim.api.nvim_buf_get_option(buf, 'filetype')
     eq(ft, 'codex')
+    eq(vim.api.nvim_win_get_config(win).relative, '')
+    eq(vim.api.nvim_win_get_width(win), math.floor(vim.o.columns * 0.5))
 
     require('codex').close()
   end)
@@ -316,7 +322,7 @@ describe('codex.nvim', function()
     vim.fn = original_fn
   end)
 
-  it('registers smart keymaps by default and triggers Codex actions', function()
+  it('registers smart keymaps by default and uses codex focus workflow', function()
     local codex = reload_codex()
     codex.setup { cmd = { 'echo', 'test' } }
 
@@ -326,15 +332,38 @@ describe('codex.nvim', function()
     assert(type(normal_map.callback) == 'function', 'normal smart keymap callback should exist')
     assert(type(visual_map.callback) == 'function', 'visual smart keymap callback should exist')
 
-    local toggle_called = false
-    local original_toggle = codex.toggle
-    codex.toggle = function()
-      toggle_called = true
+    local state = require 'codex.state'
+    local open_called_opts = nil
+    local close_called = false
+    local startinsert_calls = 0
+
+    local original_open = codex.open
+    codex.open = function(opts)
+      open_called_opts = opts
     end
 
-    normal_map.callback()
+    local original_close = codex.close
+    codex.close = function()
+      close_called = true
+    end
 
-    assert(toggle_called, 'normal smart keymap should call codex.toggle')
+    local original_cmd = vim.cmd
+    vim.cmd = function(cmd)
+      if cmd == 'startinsert' then
+        startinsert_calls = startinsert_calls + 1
+        return
+      end
+      return original_cmd(cmd)
+    end
+
+    state.win = nil
+    normal_map.callback()
+    assert(open_called_opts and open_called_opts.focus == true, 'normal smart keymap should open Codex with focus')
+    eq(startinsert_calls, 1)
+
+    state.win = vim.api.nvim_get_current_win()
+    normal_map.callback()
+    assert(close_called, 'normal smart keymap should close visible Codex window')
 
     local send_called = false
     local captured_submit = nil
@@ -349,9 +378,14 @@ describe('codex.nvim', function()
 
     assert(send_called, 'visual smart keymap should call send_selection')
     eq(captured_submit, false)
+    assert(open_called_opts and open_called_opts.focus == true, 'visual smart keymap should focus Codex after send')
+    eq(startinsert_calls, 2)
 
-    codex.toggle = original_toggle
+    vim.cmd = original_cmd
+    codex.open = original_open
+    codex.close = original_close
     codex.actions.send_selection = original_send_selection
+    state.win = nil
   end)
 
   it('does not register smart keymaps when disabled', function()
@@ -370,6 +404,22 @@ describe('codex.nvim', function()
     assert(vim.tbl_isempty(visual_map), 'visual smart keymap should be absent when disabled')
   end)
 
+  it('maps smart key in codex terminal buffer to close window', function()
+    local codex = reload_codex()
+    codex.setup { cmd = { 'echo', 'test' } }
+    codex.open()
+
+    local state = require 'codex.state'
+    local term_map = vim.api.nvim_buf_call(state.buf, function()
+      return vim.fn.maparg('<C-a>', 't', false, true)
+    end)
+
+    assert(not vim.tbl_isempty(term_map), 'terminal smart keymap should exist in codex buffer')
+    assert(term_map.rhs:find([[require('codex').close()]], 1, true), 'terminal smart keymap should close Codex')
+
+    codex.close()
+  end)
+
   it('sends payload via actions.send and respects submit option', function()
     local codex = reload_codex()
     codex.setup { cmd = { 'echo', 'test' } }
@@ -386,6 +436,7 @@ describe('codex.nvim', function()
 
     local state = require 'codex.state'
     state.job = 999
+    state.ready = true
 
     local ok_plain = codex.actions.send('hello')
     local ok_submit = codex.actions.send('world', { submit = true })
@@ -482,6 +533,7 @@ describe('codex.nvim', function()
 
     local state = require 'codex.state'
     state.job = 888
+    state.ready = true
 
     local ok = codex.actions.send_selection()
 
@@ -509,6 +561,7 @@ describe('codex.nvim', function()
 
     local state = require 'codex.state'
     state.job = 999
+    state.ready = true
 
     codex.open { focus = false }
     assert(state.win and vim.api.nvim_win_is_valid(state.win), 'Codex window should be open before hiding')
@@ -600,7 +653,9 @@ describe('codex.nvim', function()
     eq(vim.api.nvim_get_current_win(), origin_win)
     assert(termopen_called, 'send_selection should start Codex when no session is active')
     eq(termopen_win, state.win)
-    assert(sent_payload:find('File: selection_autostart_test.lua:1%-2', 1, false), 'payload should include file and line range')
+    assert(sent_payload == nil, 'payload should be queued while session is warming up')
+    assert(type(state.pending[1]) == 'string', 'queued payload should be stored in pending queue')
+    assert(state.pending[1]:find('File: selection_autostart_test.lua:1%-2', 1, false), 'queued payload should include file and line range')
 
     vim.fn = original_fn
   end)

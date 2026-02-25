@@ -15,6 +15,7 @@ local config = {
   width = 0.5,
   height = 0.8,
   cmd = 'codex',
+  args = nil, -- Optional additional CLI arguments (string or list)
   model = nil, -- Default to the latest model
   autoinstall = true,
   panel     = true,    -- if true, open Codex in a side-panel instead of floating window
@@ -96,6 +97,19 @@ local function build_cmd_args()
   end
 
   local cmd_args = type(raw_cmd) == 'string' and { raw_cmd } or vim.deepcopy(raw_cmd)
+  local extra_args = config.args
+
+  if type(extra_args) == 'string' then
+    if extra_args ~= '' then
+      table.insert(cmd_args, extra_args)
+    end
+  elseif type(extra_args) == 'table' then
+    for _, arg in ipairs(extra_args) do
+      if type(arg) == 'string' and arg ~= '' then
+        table.insert(cmd_args, arg)
+      end
+    end
+  end
 
   if config.model and not cmd_contains_model_flag(cmd_args) then
     table.insert(cmd_args, '-m')

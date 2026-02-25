@@ -179,6 +179,48 @@ describe('codex.nvim', function()
     vim.fn = original_fn
   end)
 
+  it('appends args option to command invocation', function()
+    local original_fn = vim.fn
+    local received_cmd = nil
+
+    vim.fn = setmetatable({
+      executable = function(bin)
+        if bin == 'codex' then
+          return 1
+        end
+        return original_fn.executable(bin)
+      end,
+      termopen = function(cmd, opts)
+        received_cmd = cmd
+        if type(opts.on_exit) == 'function' then
+          vim.defer_fn(function()
+            opts.on_exit(0)
+          end, 10)
+        end
+        return 654
+      end,
+    }, { __index = original_fn })
+
+    local codex = reload_codex()
+    codex.setup {
+      cmd = 'codex',
+      args = { '--full-auto' },
+      autoinstall = false,
+    }
+
+    codex.open()
+
+    vim.wait(500, function()
+      return received_cmd ~= nil
+    end, 10)
+
+    assert(type(received_cmd) == 'table', 'cmd should be passed as list')
+    eq(received_cmd[1], 'codex')
+    assert(vim.tbl_contains(received_cmd, '--full-auto'), 'should include configured args')
+
+    vim.fn = original_fn
+  end)
+
   it('uses current buffer directory by default for cwd', function()
     local original_fn = vim.fn
     local received_cwd = nil

@@ -51,6 +51,7 @@ return {
     width       = 0.5,        -- Width ratio used by side-panel or floating window (0.0 to 1.0)
     height      = 0.8,        -- Height of the floating window (0.0 to 1.0)
     cmd         = 'codex',    -- Command used to start Codex (string or list)
+    args        = nil,        -- Optional extra Codex CLI args (string or list), e.g. { '--full-auto' }
     model       = nil,        -- Optional: pass a string to use a specific model (e.g., 'o3-mini')
     autoinstall = true,       -- Automatically install the Codex CLI if not found
     panel       = true,       -- Default open mode is side-panel (set false for floating popup)
@@ -70,6 +71,7 @@ return {
 - Side-panel is the default open mode. Set `panel = false` to use a floating popup instead.
 - To capture Codex output in an editable buffer instead of a terminal, set `use_buffer = true` (or `false` to keep terminal) in your setup options.
 - Codex runs from the current file's directory by default (`cwd_from_buffer = true`). Set it to `false` to keep process cwd.
+- To pass extra CLI flags, set `args`. Example: `args = { '--full-auto' }`.
 - Use `:CodexSendSelection` in visual mode to send the current selection to Codex without auto-submitting.
 - Add the following code to show backgrounded Codex window in lualine:
 
@@ -92,7 +94,8 @@ codex.actions.send_selection({ submit = false })
 ```
 
 ### Migration Notes:
-- `cmd` is the only command option (string or list), e.g. `{ "codex", "-m", "gpt-5.3-codex" }`.
+- `cmd` controls the executable/base command (string or list), e.g. `{ "codex", "-m", "gpt-5.3-codex" }`.
+- Use `args` for extra CLI flags while keeping `cmd = 'codex'`, e.g. `{ '--full-auto' }`.
 - `cwd_from_buffer` defaults to `true`, so Codex uses the current file directory unless you set it to `false`.
 - `keymaps.smart` defaults to `<C-a>` and includes normal/visual/terminal actions.
 - Default UI now opens in side-panel mode (`panel = true`) with `width = 0.5` and `border = 'rounded'`.
